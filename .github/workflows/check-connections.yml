@@ -1,0 +1,32 @@
+# 연결 확인: 비밀키가 제대로 들어갔는지 계정 이름만 확인해요 (토큰은 화면에 안 나와요)
+name: 연결 확인
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 확인
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          mkdir -p topics; : > topics/connections.txt
+          ok() { echo "✅ $1" | tee -a topics/connections.txt; }; no() { echo "❌ $1" | tee -a topics/connections.txt; }
+          has() { echo "$ALL_SECRETS" | jq -e --arg k "$1" '.[$k] // empty' >/dev/null; }
+          for k in ANTHROPIC_API_KEY GEMINI_API_KEY GH_PAT THREADS_APP_ID THREADS_APP_SECRET; do has "$k" && ok "$k 있음" || no "$k 없음"; done
+          for name in $(echo "$ALL_SECRETS" | jq -r 'keys[] | select(test("^(IG_TOKEN|THREADS_TOKEN)"))'); do
+            tok=$(echo "$ALL_SECRETS" | jq -r --arg k "$name" '.[$k]'); echo "::add-mask::$tok"
+            case "$name" in
+              IG_*) r=$(curl -s "https://graph.instagram.com/me?fields=username&access_token=$tok") ;;
+              *)    r=$(curl -s "https://graph.threads.net/v1.0/me?fields=username&access_token=$tok") ;;
+            esac
+            u=$(echo "$r" | jq -r '.username // empty'); [ -n "$u" ] && ok "$name: @$u" || no "$name 오류: $(echo "$r" | jq -c '.error.message')"
+          done
+      - name: 결과 저장 (계정 이름만)
+        run: |
+          echo "확인 시각: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')" >> topics/connections.txt
+          git config user.name "studio-bot"; git config user.email "bot@users.noreply.github.com"
+          git add topics/connections.txt && git commit -qm "연결 확인 결과" && git push || true

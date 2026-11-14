@@ -1,0 +1,115 @@
+# [스튜디오] 승인된 글을 사이트·플랫폼별 시간에 올려요 (30분마다 확인). 결과와 일정표(status/schedule.json)를 기록해요.
+name: 스튜디오 업로드
+on:
+  schedule:
+    - cron: "10,40 * * * *"
+  push:
+    branches: [main]
+    paths: ["content/**/post.json"]
+  workflow_dispatch:
+    inputs:
+      branch: { description: "(수동 올리기) 글이 있는 가지. 비우면 예약 확인만", required: false }
+      platform: { description: "(수동 올리기) blog / instagram / threads", required: false, default: "blog" }
+      test: { description: "(시험) yes 면 네이버 비공개·기록 안 함", required: false, default: "" }
+permissions:
+  contents: write
+concurrency: publish
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main }   # 줄 서서 기다린 경우에도 시작할 때의 최신 기록으로 (같은 글 두 번 올리기 방지)
+      - name: 올릴 차례 찾기
+        id: due
+        env:
+          BRANCH: ${{ github.event.inputs.branch }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+        run: |
+          if [ -n "$BRANCH" ]; then
+            # 수동 올리기: 그 가지의 글 폴더 하나만
+            # 프로그램은 main 최신, 글 폴더만 그 가지에서 가져와요
+            if [ "${BRANCH#content/}" != "$BRANCH" ]; then dir="$BRANCH"  # main 에 있는 글 폴더를 바로 지정
+            else
+              dir="content/${BRANCH#studio/}"
+              git fetch -q --depth 1 origin "$BRANCH" && git checkout -q FETCH_HEAD -- "$dir" && git reset -q
+            fi
+            [ -f "$dir/post.json" ] || { echo "글 폴더 없음: $dir"; exit 1; }
+            echo "$dir ${PLATFORM:-blog}" > due.txt
+          else
+            python3 engine/scheduler.py due > due.txt
+          fi
+          cat due.txt
+          echo "any=$([ -s due.txt ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -q -r requirements.txt
+      - name: 올리기
+        if: steps.due.outputs.any == 'yes'
+        env:
+          # 새 사이트 비밀키를 추가하면 여기에도 한 줄 추가해요
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          NAVER_AD_API_KEY: ${{ secrets.NAVER_AD_API_KEY }}
+          NAVER_AD_SECRET_KEY: ${{ secrets.NAVER_AD_SECRET_KEY }}
+          NAVER_AD_CUSTOMER_ID: ${{ secrets.NAVER_AD_CUSTOMER_ID }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+        run: |
+          fail=0
+          while read -r d p; do
+            set +e; FORCE="${{ github.event.inputs.branch && '1' || '' }}" python3 engine/publish.py "$d" "$p" ${{ github.event.inputs.test == 'yes' && '--test' || '' }} 2>&1 | tee -a pub.log; [ ${PIPESTATUS[0]} = 0 ] || fail=1; set -e
+          done < due.txt
+          exit $fail
+      - name: 스레드 매일 투표 (커먼센스)
+        if: github.event.inputs.branch == ''
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 engine/threads_poll.py due 2>&1 | tee -a pub.log
+      - name: 일정표 갱신·기록
+        if: always()
+        env:
+          BRANCH: ${{ github.event.inputs.branch }}
+        run: |
+          rm -f due.txt
+          [ -n "${{ github.event.inputs.branch }}" ] || python3 engine/scheduler.py board
+          git config user.name "studio-bot"; git config user.email "bot@users.noreply.github.com"
+          # 실행 기록을 studio-logs 가지에 남겨요
+          if [ -s pub.log ]; then
+            cp pub.log /tmp/pub.log; cur=$(git rev-parse --abbrev-ref HEAD)
+            git stash -q -u || true
+            if git fetch -q origin studio-logs; then git checkout -q -B studio-logs FETCH_HEAD; else git checkout -q --orphan studio-logs; git rm -rqf .; fi
+            mkdir -p logs; cp /tmp/pub.log "logs/publish-$(TZ=Asia/Seoul date +%Y%m%d-%H%M).log"
+            git add logs && git commit -qm "업로드 기록" && git push -q origin studio-logs || true
+            git checkout -q -f "$cur"; git stash pop -q || true
+          fi
+          rm -f pub.log
+          if [ -n "$BRANCH" ] && [ "${{ github.event.inputs.test }}" = "yes" ]; then exit 0; fi
+          if [ -n "$BRANCH" ] && [ "${BRANCH#content/}" != "$BRANCH" ]; then BRANCH=""; fi
+          if [ -n "$BRANCH" ]; then
+            # 결과(post.json)를 그 가지에 기록
+            dir="content/${BRANCH#studio/}"; cp "$dir/post.json" /tmp/post.json
+            git fetch -q --depth 1 origin "$BRANCH" && git checkout -q -f -B "$BRANCH" FETCH_HEAD
+            cp /tmp/post.json "$dir/post.json"; git add "$dir/post.json"
+            git diff --cached --quiet && exit 0
+            git commit -qm "수동 업로드 기록" && git push -q origin "$BRANCH"
+            exit 0
+          fi
+          git add content $( [ -d status ] && echo status )
+          git diff --cached --quiet && exit 0
+          # 바뀐 파일만 따로 두었다가 최신 main 위에 다시 얹어서 올려요 (동시에 다른 작업이 올려도 안전)
+          files=$(git diff --cached --name-only); mkdir -p /tmp/keep
+          for f in $files; do mkdir -p "/tmp/keep/$(dirname "$f")"; cp "$f" "/tmp/keep/$f"; done
+          for i in 1 2 3 4; do
+            git fetch -q --depth 1 origin main && git reset -q --hard FETCH_HEAD
+            for f in $files; do mkdir -p "$(dirname "$f")"; cp "/tmp/keep/$f" "$f"; done
+            git add $files
+            git diff --cached --quiet && exit 0
+            git commit -qm "스튜디오 업로드 기록 $(TZ=Asia/Seoul date '+%m/%d %H:%M')"
+            git push -q origin HEAD:main && exit 0
+            echo "::warning::올리기 겹침, 다시 시도 $i"; sleep 5
+          done
+          echo "::error::기록 저장 실패"; exit 1

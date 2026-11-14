@@ -1,0 +1,21 @@
+# 발행 글의 네이버 순위 확인. uplika 확장이 켜진 브라우저가 있어야 해서 하루 여러 번 시도 (이미 확인한 글은 건너뜀)
+name: 순위 확인
+on:
+  schedule:
+    - cron: "43 1,5,9,13 * * *"   # 한국 10:43, 14:43, 18:43, 22:43
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: rank-check
+jobs:
+  rank:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -q requests && python3 tools/rank_check.py
+        env: { UPLIKA_RESEARCH_KEY: "${{ secrets.UPLIKA_RESEARCH_KEY }}", UPLIKA_API_KEY: "${{ secrets.UPLIKA_API_KEY }}" }
+      - run: |
+          git config user.name studio-bot; git config user.email bot@users.noreply.github.com
+          for i in 1 2 3; do git add status/ranks.json && git commit -qm "순위 확인 $(date +%F)" || break; git pull -q --rebase && git push -q && break; sleep 5; done

@@ -1,0 +1,40 @@
+# [스튜디오] 커먼센스 카드 늘리기: 사회 이슈 → 카드 후보 (관리화면 '앱 카드'에서 승인) → 승인한 카드만 앱 DB에 추가
+name: 스튜디오 앱 카드
+on:
+  schedule:
+    - cron: "0 0 * * 1,4"   # 월·목 09:00 (한국 시간)
+  workflow_dispatch:
+    inputs:
+      site: { description: "사이트 id", required: false, default: "" }
+      mode: { description: "collect(후보 만들기) / spicy(연애·돈 맵게 카드 후보) / insert(승인한 카드 추가) / check(앱 연결 점검) / social(인스타·스레드 연결 점검)", required: false, default: "collect" }
+permissions:
+  contents: write
+concurrency: studio-cards
+jobs:
+  cards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -q -r requirements.txt
+      - name: 실행
+        env:
+          # 새 사이트 비밀키를 추가하면 여기에도 한 줄 추가해요
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          NAVER_AD_API_KEY: ${{ secrets.NAVER_AD_API_KEY }}
+          NAVER_AD_SECRET_KEY: ${{ secrets.NAVER_AD_SECRET_KEY }}
+          NAVER_AD_CUSTOMER_ID: ${{ secrets.NAVER_AD_CUSTOMER_ID }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          HAS_KEY: ${{ secrets.SUPABASE_URL != '' && secrets.ANTHROPIC_API_KEY != '' && 'yes' || '' }}
+          SITE: ${{ github.event.inputs.site || '' }}
+          MODE: ${{ github.event.inputs.mode || 'collect' }}
+        run: |
+          [ -n "$HAS_KEY" ] || { echo "SUPABASE_URL / ANTHROPIC_API_KEY 가 아직 없어서 건너뜀"; exit 0; }
+          if [ "$MODE" = "social" ]; then python3 engine/check_social.py; else python3 engine/commonsense.py "$SITE" "$MODE"; fi
+          git config user.name "studio-bot"; git config user.email "bot@users.noreply.github.com"
+          git add sites status && git commit -qm "앱 카드 $MODE: $SITE" && git pull -q --rebase && git push -q || echo "바뀐 것 없음"

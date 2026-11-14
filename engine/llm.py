@@ -1,0 +1,139 @@
+"""Claude API 로 글을 써요 (공식 Messages API).
+
+- 비밀키: ANTHROPIC_API_KEY
+- 모델: 사이트 설정 llm.model (기본 claude-opus-5-5, 글 품질 우선)
+- 웹 검색: llm.web_search 가 true 면 Claude 의 웹 검색 도구로 최신 자료를 먼저 찾아요
+- 시험: MOCK_LLM=1 이면 API 를 부르지 않고 engine/mock/ 의 예시 답을 돌려줘요
+"""
+import json
+import os
+import re
+import time
+from pathlib import Path
+
+import requests
+
+from common import ROOT, log, secret
+
+API = "https://api.anthropic.com/v1/messages"
+
+# 이번 실행에서 쓴 양 (비용 추정용): 모델별 입력·출력 토큰, 웹 검색 횟수
+USAGE = {}
+
+
+def _add_usage(model, inp=0, out=0, searches=0):
+    u = USAGE.setdefault(model, {"input_tokens": 0, "output_tokens": 0, "web_searches": 0, "calls": 0})
+    u["input_tokens"] += inp
+    u["output_tokens"] += out
+    u["web_searches"] += searches
+DEFAULT_MODEL = "claude-opus-5-5"
+
+
+def _extract_json(text):
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+    raw = m.group(1) if m else text[text.find("{"): text.rfind("}") + 1]
+    return json.loads(raw, strict=False)  # 문자열 안 줄바꿈도 허용
+
+
+def _stream(body, headers):
+    """스트리밍으로 받아요 (긴 글도 시간 제한에 안 걸리게). 응답을 일반 응답 모양으로 다시 맞춰요."""
+    r = requests.post(API, json={**body, "stream": True}, headers=headers, timeout=900, stream=True)
+    if r.status_code >= 400:
+        return r.status_code, r.text, None
+    blocks, stop, err = {}, None, None
+    inp = out = searches = 0
+    for raw in r.iter_lines(decode_unicode=True):
+        if not raw or not raw.startswith("data:"):
+            continue
+        ev = json.loads(raw[5:].strip())
+        t = ev.get("type")
+        if t == "message_start":
+            u = (ev.get("message") or {}).get("usage") or {}
+            inp = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            out = u.get("output_tokens") or 0
+        if t == "content_block_start":
+            b = dict(ev["content_block"])
+            if b.get("type") in ("tool_use", "server_tool_use"):
+                b["_json"] = ""
+            blocks[ev["index"]] = b
+        elif t == "content_block_delta":
+            b, d = blocks[ev["index"]], ev["delta"]
+            if d["type"] == "text_delta":
+                b["text"] = b.get("text", "") + d["text"]
+            elif d["type"] == "input_json_delta":
+                b["_json"] += d["partial_json"]
+            elif d["type"] == "citations_delta":
+                b.setdefault("citations", []).append(d["citation"])
+        elif t == "message_delta":
+            stop = ev["delta"].get("stop_reason") or stop
+            u = ev.get("usage") or {}
+            out = max(out, u.get("output_tokens") or 0)
+            searches = max(searches, ((u.get("server_tool_use") or {}).get("web_search_requests")) or 0)
+        elif t == "error":
+            err = ev.get("error", {})
+    _add_usage(body.get("model", "?"), inp, out, searches)
+    USAGE[body.get("model", "?")]["calls"] += 1
+    if err:
+        code = 529 if err.get("type") == "overloaded_error" else 500
+        return code, json.dumps(err, ensure_ascii=False), None
+    content = []
+    for i in sorted(blocks):
+        b = blocks[i]
+        if "_json" in b:
+            js = b.pop("_json")
+            b["input"] = json.loads(js) if js else {}
+        content.append(b)
+    return 200, "", {"content": content, "stop_reason": stop}
+
+
+def ask_json(system, prompt, model=None, web_search=False, max_tokens=32000, mock_name=None, max_searches=6, images=None):
+    """프롬프트를 보내고 JSON 한 덩어리를 돌려받아요."""
+    if os.environ.get("MOCK_LLM"):
+        f = ROOT / "engine/mock" / f"{mock_name or 'post'}.json"
+        log(f"  [시험 모드] {f.name} 사용")
+        return json.loads(f.read_text(encoding="utf-8"))
+    body = {
+        "model": model or DEFAULT_MODEL,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if images:  # 사장님이 올린 실제 사진 (JPEG 경로 목록) → 순서대로 '사진 N' 표시와 함께 첨부
+        import base64
+        blocks = []
+        for i, f in enumerate(images, 1):
+            blocks += [{"type": "text", "text": f"[사진 {i}]"},
+                       {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(Path(f).read_bytes()).decode()}}]
+        body["messages"][0]["content"] = blocks + [{"type": "text", "text": prompt}]
+    if web_search:
+        body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}]
+    headers = {"x-api-key": secret("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01",
+               "content-type": "application/json"}
+    last = ""
+    for attempt in range(6):
+        code, errtext, data = _stream(body, headers)
+        if code in (429, 500, 502, 503, 529):
+            time.sleep(15 * (attempt + 1))
+            continue
+        if code == 400 and web_search and "web_search" in errtext:
+            log("  웹 검색 도구를 쓸 수 없어서 검색 없이 진행해요")
+            body.pop("tools", None)
+            web_search = False
+            continue
+        if code >= 400:
+            if "credit balance" in errtext:
+                raise RuntimeError("Claude API 크레딧이 다 떨어졌어요 → console.anthropic.com → Billing 에서 충전해 주세요")
+            raise RuntimeError(f"Claude API 오류 {code}: {errtext[:500]}")
+        if data.get("stop_reason") == "pause_turn":  # 웹 검색이 길어지면 잠시 멈춰요 → 이어서 받기
+            log("  웹 검색 이어서 진행")
+            body["messages"] = body["messages"][:1] + [{"role": "assistant", "content": data["content"]}]
+            continue
+        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        try:
+            return _extract_json(text)
+        except (ValueError, json.JSONDecodeError):
+            last = f"JSON 형식 오류 (stop={data.get('stop_reason')}, 글자수 {len(text)}): {text[:300]}"
+            log("  " + last)
+            body["messages"] += [{"role": "assistant", "content": text},
+                                 {"role": "user", "content": "형식이 잘못됐어요. 설명 없이 JSON 한 덩어리만 다시 주세요."}]
+    raise RuntimeError(last or "Claude API 가 계속 바빠요. 잠시 뒤 다시 실행하세요")

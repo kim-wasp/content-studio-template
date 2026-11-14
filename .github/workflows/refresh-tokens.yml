@@ -1,0 +1,29 @@
+# 인스타·스레드 토큰은 60일이면 만료돼요. 매달 1일·15일에 자동으로 연장해요.
+# GH_PAT(저장소 Secrets 수정 권한이 있는 GitHub 토큰)가 있어야 새 토큰을 저장할 수 있어요.
+# 이름이 IG_TOKEN 또는 THREADS_TOKEN 으로 시작하는 비밀키를 모두 연장해요.
+name: 토큰 연장
+on:
+  schedule:
+    - cron: "0 0 1,15 * *"
+  workflow_dispatch:
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 토큰 연장 (있는 것만)
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "GH_PAT 비밀키가 없어요"; exit 1; }
+          fail=0
+          for name in $(echo "$ALL_SECRETS" | jq -r 'keys[] | select(test("^(IG_TOKEN|THREADS_TOKEN)"))'); do
+            old=$(echo "$ALL_SECRETS" | jq -r --arg k "$name" '.[$k]'); echo "::add-mask::$old"
+            case "$name" in
+              IG_*) url="https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=$old" ;;
+              *)    url="https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=$old" ;;
+            esac
+            new=$(curl -s "$url" | jq -r .access_token)
+            if [ -n "$new" ] && [ "$new" != "null" ]; then echo "::add-mask::$new"; gh secret set "$name" --body "$new" --repo ${{ github.repository }}; echo "$name 연장"; else echo "$name 연장 실패 → 새로 발급해 주세요"; fail=1; fi
+          done
+          exit $fail

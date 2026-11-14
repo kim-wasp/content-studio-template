@@ -1,0 +1,294 @@
+"""커먼센스 카드 늘리기: 사회 이슈를 모아 새 투표 카드 후보를 만들고, 승인한 것만 Supabase 에 넣어요.
+
+  python3 engine/commonsense.py <사이트id> collect   # 최근 이슈 → 카드 후보 → sites/<id>/cards/<날짜>.json
+  python3 engine/commonsense.py <사이트id> insert    # 관리화면에서 승인(approved)한 후보를 앱 DB 에 추가
+
+사이트 설정 app:
+  {"kind": "commonsense", "supabase_url_secret": "SUPABASE_URL", "supabase_key_secret": "SUPABASE_SERVICE_KEY",
+   "table": "cards", "category_table": "categories", "count": 10}
+카드 칸(컬럼)은 앱 DB 의 기존 카드를 읽어서 그대로 맞춰요. 숫자 집계 칸·id·날짜 칸은 건드리지 않아요.
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import SITES, supabase_base, load_json, load_site, log, now_kst, save_json, secret  # noqa: E402
+import llm  # noqa: E402
+
+SYSTEM_FIELDS = {"id", "created_at", "updated_at", "deleted_at"}
+
+
+class DB:
+    def __init__(self, cfg):
+        self.url = supabase_base(secret(cfg.get("supabase_url_secret", "SUPABASE_URL"))) + "/rest/v1"
+        key = secret(cfg.get("supabase_key_secret", "SUPABASE_SERVICE_KEY"))
+        # 새 형식 키(sb_secret_…)는 apikey 머리말만, 예전 service_role 키는 Bearer 도 함께
+        self.h = {"apikey": key, "Content-Type": "application/json", **({} if key.startswith("sb_") else {"Authorization": f"Bearer {key}"})}
+
+    def get(self, table, params):
+        r = requests.get(f"{self.url}/{table}", headers=self.h, params=params, timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase 읽기 오류 {r.status_code}: {r.text[:300]}")
+        return r.json()
+
+    def insert(self, table, row):
+        r = requests.post(f"{self.url}/{table}", headers={**self.h, "Prefer": "return=representation"}, json=row, timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase 추가 오류 {r.status_code}: {r.text[:300]}")
+        return r.json()[0] if isinstance(r.json(), list) and r.json() else {}
+
+
+def editable_fields(sample):
+    """사람이 쓰는 칸만: 글자·참거짓 칸 + 카테고리 칸"""
+    keys = []
+    for k in sample[0].keys():
+        if k in SYSTEM_FIELDS or k.endswith("_count") or k.endswith("_at"):
+            continue
+        vals = [r.get(k) for r in sample]
+        if all(isinstance(v, (str, bool)) or v is None for v in vals) or "categ" in k:
+            keys.append(k)
+    return keys
+
+
+def texts_of(rows, fields):
+    out = []
+    for r in rows:
+        t = " / ".join(str(r.get(f)) for f in fields if isinstance(r.get(f), str) and len(str(r.get(f))) > 6)
+        if t:
+            out.append(t[:120])
+    return out
+
+
+def collect(site_id):
+    site = load_site(site_id)
+    cfg = site.get("app") or {}
+    table = cfg.get("table", "cards")
+    if os.environ.get("MOCK_LLM"):
+        sample = [{"id": 1, "category": "CER", "situation": "친구 결혼식에 축의금 5만 원 내고 둘이 가도 된다", "created_at": "x"}]
+        cats, existing = [{"code": "CER", "name": "경조사"}], sample
+    else:
+        db = DB(cfg)
+        sample = db.get(table, {"select": "*", "limit": 30})
+        if not sample:
+            raise SystemExit("앱 DB 에 기존 카드가 없어서 형식을 알 수 없어요")
+        existing = db.get(table, {"select": "*", "limit": 2000})
+        cats = db.get(cfg.get("category_table", "categories"), {"select": "*"}) if cfg.get("category_table", "categories") else []
+    fields = editable_fields(sample)
+    prompt = "\n\n".join([
+        f"[앱] {site.get('name')} — {site.get('writing_guide', '')}",
+        f"[오늘] {now_kst():%Y-%m-%d}",
+        "[카드 형식 — 이 칸만 채우세요]\n" + json.dumps(fields, ensure_ascii=False),
+        "[기존 카드 예시]\n" + json.dumps([{k: r.get(k) for k in fields} for r in sample[:12]], ensure_ascii=False, indent=0),
+        "[카테고리]\n" + json.dumps(cats, ensure_ascii=False),
+        "[이미 있는 카드 — 겹치지 않게]\n" + "\n".join(texts_of(existing, fields)[-400:]),
+        f"웹 검색으로 최근 2주 한국에서 화제가 된 사회 이슈·논쟁(뉴스·커뮤니티)을 찾아, '이거 상식이야?' 하고 의견이 갈릴 만한 생활 상황 카드 {cfg.get('count', 10)}개를 만드세요.\n"
+        "- 특정인 비방, 정치 편들기, 혐오 표현, 사건 피해자 이야기는 피하고, 누구나 겪는 생활 상황으로 바꿔서 쓰세요.\n"
+        "- 기존 카드와 같은 말투·길이로. 카테고리는 위 목록에서만.\n"
+        'JSON: {"items": [{"row": {칸: 값}, "issue": "바탕이 된 이슈 한 줄", "source": {"title": "기사 제목", "url": "https://..."}, "why": "의견이 갈리는 이유"}]}'])
+    res = llm.ask_json("당신은 생활 상식 투표 앱의 카드 편집자입니다. 사실에 근거한 이슈만 쓰고, 출력은 JSON 한 덩어리입니다.",
+                       prompt, model=(site.get("llm") or {}).get("model"), web_search=True, mock_name=f"{site_id}_cards")
+    items = []
+    for it in res.get("items", []):
+        row = {k: v for k, v in (it.get("row") or {}).items() if k in fields}
+        if row:
+            items.append({"row": row, "issue": it.get("issue", ""), "source": it.get("source", {}), "why": it.get("why", ""), "status": "pending"})
+    out = SITES / site_id / "cards" / f"{now_kst():%Y-%m-%d-%H%M}.json"
+    save_json(out, {"created": now_kst().isoformat(timespec="minutes"), "table": table, "fields": fields, "items": items})
+    log(f"카드 후보 {len(items)}개 → {out.relative_to(SITES.parent)}")
+
+
+_IDS = None
+SPICY_CATS = [{"name": "연애", "prefix": "LOV"}, {"name": "돈", "prefix": "MON"}]
+
+SPICY_GUIDE = """초반 성장용 '맵게' 카드 규칙 (사장님 지시, 2026-11):
+- 목표: 보자마자 '이건 내가 맞지' 하고 투표·공유하게 만드는 피 튀기는 생활 상황. 순한 카드 금지.
+- 소재: 연애(데이트 비용, 연락 빈도, 이성 친구, 전 연인, 기념일, 비밀번호 공유), 돈(더치페이, 축의금, 빌려준 돈, 경조사비, 부모님 용돈, 맞벌이 생활비, N빵, 선물 가격).
+- 문장: 기존 카드처럼 '~해도 된다 / ~하는 게 맞다' 한 줄 단정문(30~45자). 인정/아닌데로 정확히 반반 갈릴 만한 것.
+- 넘으면 안 되는 선(애드센스·메타 정책): 욕설, 성적 묘사·스킨십 수위, 혐오 표현(한남·김치녀·틀딱 등), 성별·세대·지역 전체를 깎아내리는 일반화, 정치·종교, 실존 인물·회사 저격, 범죄·불법 조장.
+- 남녀가 나오면 한쪽을 깎지 말고 '애인이', '상대가'처럼 성별 없이 쓰거나 양쪽 다 해당되게."""
+
+
+def spicy(site_id, n=30):
+    """연애·돈 '맵게' 카드 후보 → 관리화면 '앱 카드'에서 승인 → insert 로 앱에 추가 (새 분류도 그때 만들어요)"""
+    site = load_site(site_id)
+    cfg = site.get("app") or {}
+    table = cfg.get("table", "cards")
+    db = DB(cfg)
+    sample = db.get(table, {"select": "*", "limit": 30})
+    existing = db.get(table, {"select": "*", "limit": 2000})
+    fields = editable_fields(sample)
+    names = [c["name"] for c in SPICY_CATS]
+    prompt = "\n\n".join([
+        SPICY_GUIDE,
+        "[카드 형식 — 이 칸만 채우세요]\n" + json.dumps(fields, ensure_ascii=False),
+        "[기존 카드 예시 — 말투·형식 참고]\n" + json.dumps([{k: r.get(k) for k in fields} for r in sample[:10]], ensure_ascii=False, indent=0),
+        "[이미 있는 카드 — 겹치지 않게]\n" + "\n".join(texts_of(existing, fields)[-400:]),
+        f"카드 {n}개를 만드세요. category 는 {names} 중 하나(반반 정도), track 은 'NORM', status 는 'draft', source·correct_answer 는 null, is_event 는 false, region_scope 'KR', locale 'ko-KR'.\n"
+        'JSON: {"items": [{"row": {칸: 값}, "why": "어떻게 갈릴지 한 줄"}]}'])
+    res = llm.ask_json("당신은 생활 상식 투표 앱의 카드 편집자예요. 출력은 JSON 한 덩어리.", prompt,
+                       model=(site.get("llm") or {}).get("model"), web_search=False, max_tokens=8000, mock_name=f"{site_id}_cards")
+    items = []
+    for it in res.get("items", []):
+        row = {k: v for k, v in (it.get("row") or {}).items() if k in fields}
+        if row.get("statement") and row.get("category") in names:
+            items.append({"row": row, "issue": "초반 성장용 맵게 카드 (연애·돈)", "source": {}, "why": it.get("why", ""), "status": "pending"})
+    out = SITES / site_id / "cards" / f"{now_kst():%Y-%m-%d-%H%M}-spicy.json"
+    save_json(out, {"created": now_kst().isoformat(timespec="minutes"), "table": table, "fields": fields, "items": items})
+    log(f"맵게 카드 후보 {len(items)}개 → {out.relative_to(SITES.parent)}")
+
+
+def ensure_category(db, cfg, name):
+    t = cfg.get("category_table", "categories")
+    rows = db.get(t, {"select": "*"})
+    if any(r.get("name") == name for r in rows):
+        return
+    order = max([r.get("display_order") or 0 for r in rows] + [0]) + 1
+    db.insert(t, {"name": name, "display_order": order, "locale": "ko-KR"})
+    log(f"  새 분류 '{name}' 만들었어요")
+
+
+def next_id(db, table, category):
+    """앱 카드 id 가 'PUB-36' 처럼 '분류 머리글-번호' 형식이면 같은 분류의 다음 번호를 만들어요"""
+    import re
+    global _IDS
+    if _IDS is None:
+        _IDS = db.get(table, {"select": "id,category", "limit": 5000})
+    if not _IDS or not isinstance(_IDS[0].get("id"), str):
+        return None
+    pref, nums = {}, {}
+    for r in _IDS:
+        m = re.fullmatch(r"([A-Za-z]+)-(\d+)", str(r.get("id")))
+        if m:
+            pref.setdefault(r.get("category"), {}).setdefault(m.group(1), 0)
+            pref[r.get("category")][m.group(1)] += 1
+            nums[m.group(1)] = max(nums.get(m.group(1), 0), int(m.group(2)))
+    if category not in pref:
+        extra = {c["name"]: c["prefix"] for c in SPICY_CATS}
+        if category not in extra:
+            raise RuntimeError(f"분류 '{category}' 의 id 머리글을 몰라요")
+        pref[category] = {extra[category]: 1}
+        nums.setdefault(extra[category], 0)
+    p = max(pref[category], key=pref[category].get)
+    nums[p] += 1
+    nid = f"{p}-{nums[p]}"
+    _IDS.append({"id": nid, "category": category})
+    return nid
+
+
+def insert(site_id):
+    site = load_site(site_id)
+    cfg = site.get("app") or {}
+    db = None
+    n = 0
+    for f in sorted((SITES / site_id / "cards").glob("*.json")):
+        data = load_json(f)
+        changed = False
+        for it in data.get("items", []):
+            if it.get("status") != "approved":
+                continue
+            db = db or DB(cfg)
+            try:
+                row = dict(it["row"])
+                if row.get("category") in {c["name"] for c in SPICY_CATS}:
+                    ensure_category(db, cfg, row["category"])
+                nid = next_id(db, data.get("table", cfg.get("table", "cards")), row.get("category"))
+                if nid:
+                    row["id"] = nid
+                got = db.insert(data.get("table", cfg.get("table", "cards")), row)
+                it.update({"status": "inserted", "inserted_id": got.get("id"), "inserted_at": now_kst().isoformat(timespec="minutes")})
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                it.update({"status": "error", "error": str(e)[:300]})
+            changed = True
+        if changed:
+            save_json(f, data)
+    log(f"앱에 카드 {n}개 추가")
+
+
+def recent_inserted(site_id, n=10):
+    """최근에 앱에 들어간 카드 문장 (SNS 글감으로 써요)"""
+    out = []
+    for f in sorted((SITES / site_id / "cards").glob("*.json"))[-6:]:
+        data = load_json(f, {})
+        for it in data.get("items", []):
+            if it.get("status") == "inserted":
+                out.append(" / ".join(str(v) for v in it["row"].values() if isinstance(v, str)))
+    return out[-n:]
+
+
+def check(site_id):
+    """연결 점검: 카드 표 읽기, 블로그 표 쓰기·지우기, 사진 저장소 올리기·지우기 → status/supabase-check.txt"""
+    site = load_site(site_id)
+    cfg = site.get("app") or {}
+    app = (site.get("blog") or {}).get("app") or {}
+    db = DB(cfg)
+    base = db.url.rsplit("/rest/v1", 1)[0]
+    lines = [f"점검 시각: {now_kst():%Y-%m-%d %H:%M}"]
+
+    def step(name, fn):
+        try:
+            lines.append(f"OK  {name}: {fn()}")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"실패 {name}: {str(e)[:300]}")
+
+    def cards():
+        rows = db.get(cfg.get("table", "cards"), {"select": "*", "limit": 1})
+        r = requests.get(f"{db.url}/{cfg.get('table', 'cards')}", headers={**db.h, "Prefer": "count=exact", "Range": "0-0"}, timeout=60)
+        total = r.headers.get("content-range", "?/?").split("/")[-1]
+        return f"카드 {total}개, 칸: {', '.join(rows[0].keys()) if rows else '-'}"
+    step("투표 카드 표 읽기", cards)
+    step("카테고리 표 읽기", lambda: json.dumps(db.get(cfg.get('category_table', 'categories'), {'select': '*'}), ensure_ascii=False)[:1500])
+
+    def values():
+        rows = db.get(cfg.get("table", "cards"), {"select": "*", "limit": 2000})
+        out = []
+        for k in ("category", "track", "status", "correct_answer", "region_scope", "locale", "is_event", "source"):
+            if rows and k in rows[0]:
+                cnt = {}
+                for r in rows:
+                    v = json.dumps(r.get(k), ensure_ascii=False)[:40]
+                    cnt[v] = cnt.get(v, 0) + 1
+                out.append(f"{k}=" + ", ".join(f"{v}×{n}" for v, n in sorted(cnt.items(), key=lambda x: -x[1])[:8]))
+        out.append("예시: " + json.dumps(rows[-1], ensure_ascii=False)[:400] if rows else "")
+        return "\n    " + "\n    ".join(out)
+    step("카드 칸별 값", values)
+
+    table = app.get("table", "posts")
+
+    def posts():
+        db.get(table, {"select": "slug", "limit": 1})
+        r = requests.post(f"{db.url}/{table}", headers={**db.h, "Prefer": "return=minimal"},
+                          json={"slug": "zz-connection-test", "title": "연결 점검", "status": "draft", "content_html": "", "content_md": ""}, timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(f"쓰기 {r.status_code}: {r.text[:200]}")
+        r = requests.delete(f"{db.url}/{table}", headers=db.h, params={"slug": "eq.zz-connection-test"}, timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(f"지우기 {r.status_code}: {r.text[:200]}")
+        return "쓰기·지우기 됨"
+    step(f"블로그 표({table})", posts)
+    step("블로그 글 목록", lambda: "\n    " + "\n    ".join(f"{r.get('status')} {r.get('published_at')} {r.get('category')} {r.get('slug')}" for r in db.get(table, {"select": "slug,status,published_at,category", "order": "published_at.desc", "limit": 20})))
+
+    bucket = app.get("bucket", "blog")
+
+    def storage():
+        h = {k: v for k, v in db.h.items() if k != "Content-Type"}
+        u = f"{base}/storage/v1/object/{bucket}/zz-connection-test.txt"
+        r = requests.post(u, headers={**h, "Content-Type": "text/plain", "x-upsert": "true"}, data=b"ok", timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(f"올리기 {r.status_code}: {r.text[:200]}")
+        pub = requests.get(f"{base}/storage/v1/object/public/{bucket}/zz-connection-test.txt", timeout=60).status_code
+        requests.delete(u, headers=h, timeout=60)
+        return f"올리기 됨, 공개 주소 응답 {pub}"
+    step(f"사진 저장소({bucket})", storage)
+    out = SITES.parent / "status" / "supabase-check.txt"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+
+
+if __name__ == "__main__":
+    {"collect": collect, "insert": insert, "check": check, "spicy": spicy}[sys.argv[2]](sys.argv[1])
