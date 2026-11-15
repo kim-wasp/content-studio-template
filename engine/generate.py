@@ -125,7 +125,7 @@ def schema(site):
     blog = blog_kind(site) != "none"
     ic = img_cfg(site)
     need_photos = (blog and ic["blog_inline"] in ("photos", "mixed")) or ic["instagram"] == "photo_cards"
-    parts = ['"title": "제목 (핵심 키워드를 앞쪽에, 45자 이내)"',
+    parts = ['"title": "제목 (제목 정하기 기준으로 고른 것)"', '"title_research": "상위 제목 공통점 / 우리가 다르게 갈 점 한 줄"', '"title_candidates": [{"title": "후보", "pattern": "결론 먼저|숫자·기준|실수·손해|대상·상황|비교"}]',
              '"slug": "영문-소문자-하이픈"',
              '"keywords": {"main": "핵심 키워드", "sub": ["연관 키워드"...]}',
              '"brief": {"reader": "누가 어떤 상황에서", "question": "답할 질문 1개", "answer": "핵심 답 한 문장", "out_of_scope": "다루지 않을 것", "next_action": "읽고 할 행동"}',
@@ -251,6 +251,34 @@ def experiences(site):
     return "\n\n".join(ok)[:4000]
 
 
+# 제목: 상위 글 확인 → 서로 다른 패턴 후보 5개 → 기준으로 고르기
+# 근거: 구글 '제목 링크' 권장(설명적·간결·키워드 나열 금지·페이지마다 고유), Backlinko 400만 검색결과 CTR 분석(40~60자·긍정 프레이밍이 약간 높음, 질문형 차이 없음),
+#       네이버 검색 작성 가이드(메인 키워드 앞, 날짜·회차 라벨 금지), 구글 디스커버 정책(과장·낚시 금지)
+TITLE_GUIDE = """[제목 정하기 — 본문만큼 중요해요]
+1. 먼저 메인 키워드로 웹 검색해서 지금 상위에 있는 글 제목 3~5개를 보고, 그 제목들이 빠뜨린 것(구체적 숫자, 기준, 대상, 상황, 결론)을 찾아요. title_research 에 '상위 제목들의 공통점 / 우리가 다르게 갈 점'을 한 줄로.
+2. 서로 다른 패턴으로 후보 5개: 결론 먼저(답을 제목에), 숫자·기준(금액, 개수, mm, 기간), 실수·손해 피하기, 대상·상황 특정(이런 집, 이런 사람), 비교(A vs B).
+3. 고르는 기준(모두 만족하는 것 중 가장 누르고 싶은 것):
+   - 메인 키워드가 제목 앞쪽 15자 안에, 원형 그대로
+   - 이 글만의 구체적 정보 하나(숫자, 기준, 결론)가 제목에 있음
+   - 본문이 실제로 답하는 것만 약속 (과장, 낚시, 분노·공포 자극, 「충격」「역대급」 같은 말 금지)
+   - 길이: 네이버 블로그 30~40자, 웹사이트 글 25~45자(검색 결과에서 잘리지 않게). 날짜·회차 라벨과 사이트 이름은 넣지 않음
+   - 같은 뜻이면 해결·이득 쪽으로(「망치지 않는 법」보다 「한 번에 맞추는 법」), 단 손해를 피하는 정보가 핵심이면 손해 쪽 그대로
+   - 최근에 쓴 제목들과 첫 단어, 구조가 겹치지 않음
+4. 고른 제목을 title 에, 후보 5개를 title_candidates 에."""
+
+
+# 검색에서 '팔리는' 글 구조 (네이버 검색 콘텐츠 작성 가이드 2026-05·06, 업리카가 잰 AI 브리핑 인용 문장, 구글 디스커버 정책)
+SEARCH_GUIDE = """[검색에서 클릭되고 인용되는 글 구조 — 모든 블로그 글]
+1. 첫 문단: 누가, 어떤 상황에서, 왜 이 글을 찾는지 한 줄 + 바로 답 한 문장. 인사말·배경 설명으로 시작하지 않아요.
+2. 소제목마다 첫 문장은 그 소제목의 답이나 정의(「X는 ~하는 Y예요」). 근거와 설명은 그다음에.
+3. 따라 하는 내용은 번호 목록, 둘 이상을 비교하면 표. 고려할 다른 선택지와 고르는 기준도 한 번.
+4. 값이 바뀌는 정보(가격, 법, 제도, 메뉴 경로)에는 「2026년 ○월 기준」을 붙이고, 메뉴 경로·설정값은 한 문장에 그대로(설정 → 계정 → 보안).
+5. 숫자와 근거는 출처가 있는 것만. 아쉬운 점, 주의할 점, 이런 경우엔 안 맞는다는 한계도 한 번 써요(신뢰가 클릭보다 오래 갑니다).
+6. 제목: 메인 키워드를 앞에, 30~40자, 본문이 실제로 답하는 내용만 약속. 본문과 다른 낚시, 과장, 분노·공포 자극은 금지(네이버·구글 모두 노출을 줄여요).
+7. meta_description: 검색 결과에서 눌러 볼 이유를 80~120자로(이 글에서만 얻는 숫자, 기준, 결론). 제목 반복 금지.
+8. 끝: 결산 문장 대신, 독자가 다음에 할 행동 하나와 이어 읽을 관련 글 하나."""
+
+
 def build_prompt(site, topic, notes, view=None):
     blog = blog_kind(site) != "none"
     m = site.get("monetization") or {}
@@ -261,6 +289,8 @@ def build_prompt(site, topic, notes, view=None):
          "[승인 대기 중인 글 주제(영문 요약) — 이 주제들과도 겹치지 않게, 다른 주제로]\n" + "\n".join(pending_topics(site["id"]) or ["(없음)"])]
     if blog:
         p.append(STAGE_GUIDE.get(m.get("stage", "pre_adsense" if blog_kind(site) == "wordpress" else "adpost"), ""))
+        p.append(SEARCH_GUIDE)
+        p.append(TITLE_GUIDE)
         links = [x for x in posts if x["url"]][-40:]
         if m.get("internal_links", True) and links:
             p.append("[내부 링크 후보 — 관련 있는 글만 본문에 2~3개 자연스럽게 [제목](주소)로]\n" + "\n".join(f"- {x['title']}: {x['url']}" for x in links))
@@ -376,7 +406,7 @@ def review_cards(site, d, res):
     blocks.append({"type": "text", "text": CARD_REVIEW + "\n\n" + skills.block("card-image-check") + "\n\n[글·캡션]\n" + json.dumps(ctx, ensure_ascii=False)})
     try:
         out = llm.ask_json("당신은 꼼꼼한 카드뉴스 검수자입니다. 출력은 설명 없이 JSON 한 덩어리입니다.", blocks,
-                           model=(site.get("llm") or {}).get("model"), web_search=False, max_tokens=2000, mock_name="card_review")
+                           model=helper_model(site), web_search=False, max_tokens=2000, mock_name="card_review")
     except Exception as e:  # noqa: BLE001  눈 검사가 실패해도 글 만들기는 계속
         log(f"  카드 눈 검사 건너뜀: {str(e)[:120]}")
         return []
@@ -522,6 +552,7 @@ def write_post(site, res, d, topic):
         "id": f"{site['id']}/{d.name}", "site": site["id"], "title": res["title"], "status": "draft",
         "created_at": now_kst().isoformat(timespec="minutes"), "requested_topic": topic or "",
         "keywords": res.get("keywords", {}), "brief": res.get("brief", {}), "why_this_topic": res.get("why_this_topic", ""),
+        "title_candidates": res.get("title_candidates") or old.get("title_candidates") or [], "title_research": res.get("title_research") or old.get("title_research", ""),
         "meta_description": res.get("meta_description", ""), "hero_prompt": res.get("hero_prompt", ""), "thumb_text": res.get("thumb_text", ""),
         "category": res.get("category", ""), "kind": res.get("kind", ""), "summary": res.get("summary") or old.get("summary") or [],
         "conclusion": res.get("conclusion") or old.get("conclusion", ""),
@@ -593,6 +624,11 @@ def preview_html(site, post, d):
 
 
 # ---------- AI 티 다듬기 (im-not-ai 규칙) ----------
+def helper_model(site):
+    """글 본문 말고 보조 작업(윤문, 카드 검수, 스레드 고치기)에 쓰는 모델: 본문 모델의 절반 값"""
+    return (site.get("llm") or {}).get("helper_model", "claude-sonnet-5-5")
+
+
 def humanize(site, md):
     if not md or not (site.get("monetization") or {}).get("humanize", True) or os.environ.get("MOCK_LLM"):
         return md
@@ -602,7 +638,7 @@ def humanize(site, md):
         "아래 규칙으로 블로그 글에서 AI 티가 나는 문장만 찾아 고쳐 주세요. 고칠 게 없으면 빈 목록. 후킹(첫 문단의 강한 말)은 살리세요.\n"
         "비용 절약을 위해 전체 글을 다시 쓰지 말고, 바꿀 문장만 원문 그대로(from)와 고친 문장(to)으로 주세요. 최대 25개.\n\n[규칙]\n" + rules
         + '\n\n[글]\n' + md + '\n\n출력: {"edits": [{"from": "원문 문장 그대로", "to": "고친 문장"}]}',
-        model=(site.get("llm") or {}).get("model"), web_search=False, mock_name="humanize")
+        model=helper_model(site), web_search=False, mock_name="humanize")
     new = md
     if res.get("article_md"):
         new = res["article_md"]
@@ -667,7 +703,7 @@ def season_candidates(site, n=8):
         "keyword 는 네이버에서 사람들이 실제로 치는 검색어(띄어쓰기 없이 2~12자, 예: 독감예방접종, 수면부족증상). "
         'JSON: {"ideas": [{"title": "제목안(핵심 키워드 앞쪽, 과장 없이 사실만)", "keyword": "네이버 검색어", "category": "카테고리", '
         '"trend_keyword": "관련 있는 구글 트렌드 검색어(없으면 빈 문자열)", "angle": "이 글이 답할 질문 한 줄"}]}'])
-    res = llm.ask_json(SYSTEM, prompt, model="claude-sonnet-5-5", web_search=False, max_tokens=3000, mock_name=f"{site['id']}_ideas")
+    res = llm.ask_json(SYSTEM, prompt, model="claude-haiku-5-5", web_search=False, max_tokens=3000, mock_name=f"{site['id']}_ideas")
     out = []
     for x in (res.get("ideas") or [])[:n]:
         nv = trends.naver_volume(x.get("keyword") or "")
@@ -774,7 +810,7 @@ def keyword_pool(site, n_seeds=15, keep=12):
         "너무 넓은 말(예: 인테리어, 집수리)도, 아무도 안 칠 긴 문장도 말고 2~3단어 짜리 구체적인 검색어로. 제품 이름, 문제 상황(예: 방문 안닫힘), 방법(예: 실리콘 쏘는법)을 섞어서. "
         'JSON: {"seeds": ["검색어", ...]}'] if x)
     try:
-        seeds = [w for w in (llm.ask_json(SYSTEM, prompt, model="claude-sonnet-5-5", web_search=False, max_tokens=1500).get("seeds") or []) if w][:n_seeds]
+        seeds = [w for w in (llm.ask_json(SYSTEM, prompt, model="claude-haiku-5-5", web_search=False, max_tokens=1500).get("seeds") or []) if w][:n_seeds]
     except Exception as e:  # noqa: BLE001
         log(f"  키워드 후보 만들기 실패: {e}")
         return []
@@ -1102,7 +1138,7 @@ def rewrite_threads(site_id, dir_):
     bad = th_problems(posts, tag)
     if bad:
         res = llm.ask_json(SYSTEM, THREADS_GUIDE + "\n아래 스레드 글을 고쳐 주세요: " + " / ".join(bad) + "\n\n" + json.dumps({"posts": posts, "topic_tag": tag}, ensure_ascii=False)
-                           + '\n\n출력: {"posts": [...], "topic_tag": "..."}', model=(site.get("llm") or {}).get("model"), web_search=False, mock_name="threads")
+                           + '\n\n출력: {"posts": [...], "topic_tag": "..."}', model=helper_model(site), web_search=False, mock_name="threads")
         posts = [x for x in (res.get("posts") or []) if x] or posts
         tag = res.get("topic_tag") or tag
     if len(posts) < 2:

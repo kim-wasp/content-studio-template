@@ -6,3 +6,4 @@
 - 구조와 기능 설명: STUDIO.md
 - 비밀키(키, 토큰, 비밀번호)는 이 저장소 Settings > Secrets and variables > Actions 에만 넣어요. 파일에 적지 않아요.
 - 사이트 추가: 관리화면 > 사이트 > 새 사이트 (sites/_template/site.json 이 틀이에요)
+- 새 글 검색엔진 알림(IndexNow): sites/<사이트>/site.json 의 indexnow_key 설명 참고
