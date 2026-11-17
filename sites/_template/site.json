@@ -112,5 +112,13 @@
   },
   "app": {},
   "indexnow_key": "",
-  "_indexnow_설명": "새 글을 네이버·빙에 바로 알리는 IndexNow 키(영문·숫자 32자 등). 블로그 루트에 <키>.txt 파일(내용은 키)을 올린 뒤 여기 적어요. 워드프레스는 Rank Math 즉시 색인 모듈이 대신 해 주니 비워 둬요."
+  "_indexnow_설명": "새 글을 네이버·빙에 바로 알리는 IndexNow 키(영문·숫자 32자 등). 블로그 루트에 <키>.txt 파일(내용은 키)을 올린 뒤 여기 적어요. 워드프레스는 Rank Math 즉시 색인 모듈이 대신 해 주니 비워 둬요.",
+  "issue_track": {
+    "enabled": false,
+    "queries": [],
+    "max_per_day": 2,
+    "min_score": 7,
+    "stance": "both",
+    "gap_hours": 3
+  }
 }

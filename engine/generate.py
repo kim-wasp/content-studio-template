@@ -71,6 +71,18 @@ THREADS_GUIDE = """스레드 규칙 (사장님 지시):
   이모지는 쓰더라도 1~2개, 가족·피부색 조합 이모지 금지.
 """
 
+# 성과 분석(2026-11): 첫 줄이 '겪어 본 짜증 장면'인 글만 조회가 크게 높았고 정보형 첫 줄은 낮았어요. → 본문은 정보가 아니라 '한마디 하고 싶어지는 장면·입장'으로.
+THREADS_REACT = """[스레드 반응 받는 법 — 성과 분석 결과, 위 규칙보다 우선]
+- 본문은 정보를 주는 글이 아니라 사람이 멈추고 한마디 하고 싶어지는 글이에요. 정보·방법·정답은 전부 댓글로.
+- 첫 줄은 둘 중 하나:
+  1) 겪어 본 사람이 '어 나 이거' 하는 짜증·민망·억울 장면 한 줄 (예: 새로 산 서랍레일 달았는데 끝까지 안 닫혀?)
+  2) 오늘 기사·커뮤니티에서 실제로 터진 일의 가장 센 한 줄 (누가, 무엇을, 얼마)
+  설명형 첫 줄(○○ 고르는 법, ○○ 알아두면 좋아) 금지.
+- 둘째~셋째 줄: 사람들이 갈리는 지점이나 흔한 착각을 찔러요. 한쪽 편을 가볍게 들어도 돼요(정치 계정은 양쪽 가장 센 말만).
+- 마지막 줄: 답하기 쉬운 질문 하나. 둘 중 하나 고르기, 숫자 하나, 겪은 일 한 줄로 답할 수 있게. 넓은 질문(어떻게 생각해?) 금지.
+- 가정 상황(~하면 어떡할래?)보다 실제로 있었던 일에 붙이는 게 반응이 커요. 최근 기사·화제가 있으면 그걸로 시작.
+- 반응 낚시 문구(댓글 달아줘, 공감하면 좋아요) 금지는 그대로."""
+
 CARD_GUIDE = """카드(인스타 캐러셀, 1080x1350) 규칙:
 - slides 6~8장. 1장째는 표지(가장 강한 후킹, "big": true), 마지막 장은 저장·유입 안내.
 - 장마다 새 정보 하나. 같은 문장 반복 금지.
@@ -127,7 +139,7 @@ def schema(site):
     blog = blog_kind(site) != "none"
     ic = img_cfg(site)
     need_photos = (blog and ic["blog_inline"] in ("photos", "mixed")) or ic["instagram"] == "photo_cards"
-    parts = ['"title": "제목 (제목 정하기 기준으로 고른 것)"', '"title_research": "상위 제목 공통점 / 우리가 다르게 갈 점 한 줄"', '"title_candidates": [{"title": "후보", "pattern": "결론 먼저|숫자·기준|실수·손해|대상·상황|비교"}]',
+    parts = ['"title": "제목 (제목 정하기 기준으로 고른 것)"', '"title_research": "상위 제목 공통점 / 우리가 다르게 갈 점 한 줄"', '"title_candidates": [{"title": "후보", "pattern": "결론 먼저|숫자·기준|실수·손해|짜증 장면|반전|대상·상황|비교", "score": 8}]',
              '"slug": "영문-소문자-하이픈"',
              '"keywords": {"main": "핵심 키워드", "sub": ["연관 키워드"...]}',
              '"brief": {"reader": "누가 어떤 상황에서", "question": "답할 질문 1개", "answer": "핵심 답 한 문장", "out_of_scope": "다루지 않을 것", "next_action": "읽고 할 행동"}',
@@ -258,15 +270,18 @@ def experiences(site):
 #       네이버 검색 작성 가이드(메인 키워드 앞, 날짜·회차 라벨 금지), 구글 디스커버 정책(과장·낚시 금지)
 TITLE_GUIDE = """[제목 정하기 — 본문만큼 중요해요]
 1. 먼저 메인 키워드로 웹 검색해서 지금 상위에 있는 글 제목 3~5개를 보고, 그 제목들이 빠뜨린 것(구체적 숫자, 기준, 대상, 상황, 결론)을 찾아요. title_research 에 '상위 제목들의 공통점 / 우리가 다르게 갈 점'을 한 줄로.
-2. 서로 다른 패턴으로 후보 5개: 결론 먼저(답을 제목에), 숫자·기준(금액, 개수, mm, 기간), 실수·손해 피하기, 대상·상황 특정(이런 집, 이런 사람), 비교(A vs B).
+2. 서로 다른 패턴으로 후보 5개: 결론 먼저(답을 제목에), 숫자·기준(금액, 개수, mm, 기간), 실수·손해 피하기, 짜증 장면(독자가 겪는 그 순간), 반전(다들 믿는 것과 다른 사실), 대상·상황 특정, 비교(A vs B).
 3. 고르는 기준(모두 만족하는 것 중 가장 누르고 싶은 것):
    - 메인 키워드가 제목 앞쪽 15자 안에, 원형 그대로
    - 이 글만의 구체적 정보 하나(숫자, 기준, 결론)가 제목에 있음
    - 본문이 실제로 답하는 것만 약속 (과장, 낚시, 분노·공포 자극, 「충격」「역대급」 같은 말 금지)
    - 길이: 네이버 블로그 30~40자, 웹사이트 글 25~45자(검색 결과에서 잘리지 않게). 날짜·회차 라벨과 사이트 이름은 넣지 않음
-   - 같은 뜻이면 해결·이득 쪽으로(「망치지 않는 법」보다 「한 번에 맞추는 법」), 단 손해를 피하는 정보가 핵심이면 손해 쪽 그대로
+   - 밋밋한 제목 금지: 「~하는 방법」「~총정리」「~알아보기」「~의 모든 것」「~꿀팁」으로 끝나는 제목은 후보에서 빼요
+   - 더 센 쪽으로: 독자가 겪는 짜증·손해 장면(「새로 단 서랍이 끝까지 안 닫히는 이유」), 다들 믿는 것의 반전, 돈·시간이 걸린 구체 숫자 중 이 글에 가장 맞는 것
+     (2026-11-17 성과 분석: 겪어 본 짜증 장면으로 시작한 글만 반응이 10배)
    - 최근에 쓴 제목들과 첫 단어, 구조가 겹치지 않음
-4. 고른 제목을 title 에, 후보 5개를 title_candidates 에."""
+4. 후보마다 '검색 결과에서 이걸 누를 확률' 1~10점을 매겨 title_candidates 의 score 에 적고, 가장 높은 것을 title 에. 8점 넘는 게 없으면 후보를 다시 써요.
+   애드센스 승인 전 사이트도 같아요: 세게 쓰되 본문이 그대로 답하는 내용만(과장·공포 조장 금지)."""
 
 
 # 검색에서 '팔리는' 글 구조 (네이버 검색 콘텐츠 작성 가이드 2026-05·06, 업리카가 잰 AI 브리핑 인용 문장, 구글 디스커버 정책)
@@ -391,6 +406,7 @@ def build_prompt(site, topic, notes, view=None):
         p.append(skills.block("instagram-kr"))
     if site.get("threads", {}).get("enabled"):
         p.append(THREADS_GUIDE)
+        p.append(THREADS_REACT)
         p.append(skills.block("threads-kr"))
     if img_cfg(site)["instagram"] == "photo_cards":
         p.append(PHOTO_CARD_GUIDE)
@@ -1203,7 +1219,7 @@ def rewrite_threads(site_id, dir_):
     post = load_json(d / "post.json")
     md = (d / "article.md").read_text(encoding="utf-8") if (d / "article.md").exists() else ""
     exp = experiences(site) if "experiences" in globals() else ""
-    res = llm.ask_json(SYSTEM, THREADS_GUIDE + "\n" + skills.block("threads-kr") + "\n[글 제목] " + post["title"] + "\n[운영자 경험]\n" + (exp or "(없음)")
+    res = llm.ask_json(SYSTEM, THREADS_GUIDE + "\n" + THREADS_REACT + "\n" + skills.block("threads-kr") + "\n[글 제목] " + post["title"] + "\n[운영자 경험]\n" + (exp or "(없음)")
                        + "\n[블로그 글]\n" + md[:9000] + '\n\n출력: {"hooks": ["첫 줄 후보1", "후보2", "후보3"], "posts": ["본문", "댓글", "대댓글 + {LINK}"], "topic_tag": "주제 태그 1개"}',
                        model=(site.get("llm") or {}).get("model"), web_search=False, mock_name="threads")
     posts = [x for x in (res.get("posts") or []) if x]
